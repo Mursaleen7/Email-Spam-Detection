@@ -1,0 +1,11 @@
+{
+    "imap_servers": {
+        "gmail": "imap.gmail.com",
+        "outlook": "outlook.office365.com",
+        "yahoo": "imap.mail.yahoo.com"
+    },
+    "scan_folders": ["INBOX"],
+    "max_emails_to_scan": 50,
+    "save_results": true,
+    "results_directory": "spam_scan_results"
+}
