@@ -4,41 +4,96 @@ import string
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
+import imaplib
+import email
+import email.header
+import os
+import json
+from datetime import datetime
+import getpass
+import sys
 
-# Sample dataset with labeled emails
-emails = [
-    # Training data
-    {"text": "Congratulations! You've won a $1000 gift card. Claim now!", "label": "spam"},
-    {"text": "Double your income working from home! Limited offer!", "label": "spam"},
-    {"text": "URGENT: Your account will be suspended. Verify now!", "label": "spam"},
-    {"text": "FREE iPhone 15 Pro! You are the 1000th visitor!", "label": "spam"},
-    {"text": "Get rich quick! Proven method to earn $10K weekly!", "label": "spam"},
-    {"text": "Hot singles in your area! Click to chat now!", "label": "spam"},
-    {"text": "URGENT: Security alert! Verify your identity now!", "label": "spam"},
-    {"text": "Your package has been shipped, tracking number: AZ8932X", "label": "ham"},
-    {"text": "Your monthly statement is now available online", "label": "ham"},
-    {"text": "Team meeting scheduled for Friday at 2pm", "label": "ham"},
-    {"text": "Your flight confirmation: Departing LAX 10:30 AM", "label": "ham"},
-    {"text": "Your prescription is ready for pickup", "label": "ham"},
-    {"text": "Payment received, thank you for your purchase", "label": "ham"},
-    {"text": "Invoice #12345 for your recent order", "label": "ham"},
-    {"text": "Reminder: Doctor's appointment tomorrow at 3pm", "label": "ham"},
-    {"text": "Your Amazon order will arrive tomorrow", "label": "ham"},
-    # Add more training examples for better coverage
-    {"text": "Limited time offer! 80% discount on all products!", "label": "spam"},
-    {"text": "URGENT: Your bank account has been locked", "label": "spam"},
-    {"text": "You've been selected for a special offer!", "label": "spam"},
-    {"text": "Click here to claim your prize now!", "label": "spam"},
-    {"text": "Lose 20 pounds in 1 week! New miracle pill!", "label": "spam"},
-    {"text": "Your password has expired. Click to update now", "label": "spam"},
-    {"text": "Reminder: Project deadline is next Monday", "label": "ham"},
-    {"text": "Your subscription has been renewed successfully", "label": "ham"},
-    {"text": "Thank you for your payment of $49.99", "label": "ham"},
-    {"text": "Your support ticket #45678 has been resolved", "label": "ham"}
-]
-
-# Create DataFrame
-df = pd.DataFrame(emails)
+# Load data from spam.csv instead of using the sample dataset
+def load_data():
+    try:
+        # Load CSV file - assumes 'text' and 'label' columns
+        df = pd.read_csv('spam.csv')
+        
+        # Check if required columns exist, otherwise try to find appropriate columns
+        if 'text' not in df.columns or 'label' not in df.columns:
+            # Common column names in spam datasets
+            text_columns = ['text', 'message', 'email', 'content', 'body']
+            label_columns = ['label', 'class', 'category', 'spam', 'is_spam']
+            
+            # Find text column
+            found_text_col = None
+            for col in text_columns:
+                if col in df.columns:
+                    found_text_col = col
+                    break
+            
+            # Find label column
+            found_label_col = None
+            for col in label_columns:
+                if col in df.columns:
+                    found_label_col = col
+                    break
+            
+            # If columns were found, rename them
+            if found_text_col and found_label_col:
+                df = df.rename(columns={found_text_col: 'text', found_label_col: 'label'})
+            else:
+                # If appropriate columns weren't found, use first two columns and warn user
+                print("Warning: Could not identify text and label columns in the CSV file.")
+                print(f"Available columns: {list(df.columns)}")
+                print("Using first column as 'text' and second column as 'label'.")
+                df = df.iloc[:, 0:2]
+                df.columns = ['text', 'label']
+        
+        # Ensure text column is string type
+        df['text'] = df['text'].astype(str)
+        
+        # Standardize labels to 'spam' and 'ham'
+        # Check what values exist in the label column
+        unique_labels = df['label'].unique()
+        
+        # Common spam/ham encodings
+        spam_values = ['spam', 'Spam', 'SPAM', '1', 1, True, 'yes', 'Yes']
+        ham_values = ['ham', 'Ham', 'HAM', '0', 0, False, 'no', 'No']
+        
+        # If binary but not 'spam'/'ham', convert
+        if set(unique_labels) != {'spam', 'ham'}:
+            df['label'] = df['label'].apply(
+                lambda x: 'spam' if x in spam_values else 'ham' if x in ham_values else x
+            )
+            
+            # After conversion, check again and warn if still not standardized
+            if set(df['label'].unique()) != {'spam', 'ham'}:
+                print(f"Warning: Unexpected label values: {df['label'].unique()}")
+                print("Please ensure labels are either 'spam' or 'ham'.")
+        
+        print(f"Loaded {len(df)} emails from spam.csv")
+        print(f"Class distribution: {df['label'].value_counts().to_dict()}")
+        
+        return df
+    
+    except FileNotFoundError:
+        print("Error: spam.csv file not found in the current directory.")
+        print("Using a small sample dataset instead.")
+        
+        # Fall back to a small sample dataset
+        sample_data = [
+            {"text": "Congratulations! You've won a $1000 gift card. Claim now!", "label": "spam"},
+            {"text": "Double your income working from home! Limited offer!", "label": "spam"},
+            {"text": "Meeting scheduled for tomorrow at 10am", "label": "ham"},
+            {"text": "Please review the attached report before Friday", "label": "ham"},
+            {"text": "FREE entry into our $100,000 prize draw!!!", "label": "spam"},
+            {"text": "Hi John, are we still meeting for lunch?", "label": "ham"},
+            {"text": "Get 50% off all products for a limited time only!", "label": "spam"},
+            {"text": "Your Amazon package will be delivered tomorrow", "label": "ham"}
+        ]
+        
+        return pd.DataFrame(sample_data)
 
 # Text preprocessing function without NLTK dependencies
 def preprocess_text(text):
@@ -69,20 +124,33 @@ def preprocess_text(text):
     
     return ' '.join(tokens)
 
-# Apply preprocessing
-df['processed_text'] = df['text'].apply(preprocess_text)
-
-# Feature extraction using TF-IDF
-vectorizer = TfidfVectorizer(max_features=1000)
-X = vectorizer.fit_transform(df['processed_text'])
-y = df['label']
-
-# Split data
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-# Train a RandomForest classifier
-model = RandomForestClassifier(n_estimators=100, random_state=42)
-model.fit(X_train, y_train)
+# Build and train the spam classifier
+def train_spam_classifier():
+    print("Loading and preprocessing data...")
+    df = load_data()
+    
+    # Apply preprocessing
+    df['processed_text'] = df['text'].apply(preprocess_text)
+    
+    # Feature extraction using TF-IDF
+    vectorizer = TfidfVectorizer(max_features=5000)
+    X = vectorizer.fit_transform(df['processed_text'])
+    y = df['label']
+    
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    print(f"Training model on {X_train.shape[0]} samples, testing on {X_test.shape[0]} samples...")
+    
+    # Train a RandomForest classifier
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+    
+    # Evaluate on test set
+    accuracy = model.score(X_test, y_test)
+    print(f"Model accuracy: {accuracy:.4f}")
+    
+    return model, vectorizer
 
 # Enhanced spam detection features
 def extract_features(text):
@@ -113,7 +181,15 @@ def extract_features(text):
     return features
 
 # Function to classify emails with both ML model and rule-based features
-def classify_email(email_text):
+def classify_email(email_text, model=None, vectorizer=None):
+    global _model, _vectorizer
+    
+    # Use global model if none provided (to avoid retraining for each email)
+    if model is None:
+        model = _model
+    if vectorizer is None:
+        vectorizer = _vectorizer
+    
     # Preprocess text for ML model
     processed_text = preprocess_text(email_text)
     
@@ -162,41 +238,6 @@ def classify_email(email_text):
         return "Spam Mail"
     else:
         return "Ham Mail (Not Spam)"
-
-# Test the classifier on the provided examples
-test_emails = [
-    "Urgent! Your account has been compromised. Verify your identity immediately",
-    "Earn $500/day from home! No experience needed. Sign up now",
-    "URGENT: Your account has been compromised. Click here to reset your password immediately!",
-    "Meeting scheduled for tomorrow at 10 AM. Please confirm your attendance.",
-    "FREE GIFT worth $100! Claim your prize now! Limited time offer!!!",
-    "Your Amazon package will be delivered tomorrow between 2-4 PM."
-]
-
-print("\nClassification Results:")
-for i, email in enumerate(test_emails, 1):
-    prediction = classify_email(email)
-    print(f"Email {i}: {email}")
-    print(f"Prediction: {prediction}")
-    print("-" * 50)
-
-
-import pandas as pd
-import re
-import string
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.ensemble import RandomForestClassifier
-import imaplib
-import email
-import email.header
-import os
-import json
-from datetime import datetime
-import getpass
-import sys
-
-# Load or train the spam classifier (using your existing code)
-# Note: This section assumes you've already trained the model as in your previous code
 
 # Create a config file to store email settings (not credentials)
 def create_config_file():
@@ -259,21 +300,30 @@ def extract_email_content(msg):
             
             if "attachment" not in content_disposition:
                 if content_type == "text/plain":
-                    body = part.get_payload(decode=True).decode('utf-8', errors='replace')
-                    break
+                    try:
+                        body = part.get_payload(decode=True).decode('utf-8', errors='replace')
+                        break
+                    except:
+                        continue
                 elif content_type == "text/html" and not body:
                     # Use HTML content if no plain text is found
-                    html_body = part.get_payload(decode=True).decode('utf-8', errors='replace')
-                    # Simple HTML to text conversion (very basic)
-                    body = re.sub('<[^<]+?>', ' ', html_body)
+                    try:
+                        html_body = part.get_payload(decode=True).decode('utf-8', errors='replace')
+                        # Simple HTML to text conversion (very basic)
+                        body = re.sub('<[^<]+?>', ' ', html_body)
+                    except:
+                        continue
     else:
         # Not multipart - get payload directly
-        body = msg.get_payload(decode=True).decode('utf-8', errors='replace')
+        try:
+            body = msg.get_payload(decode=True).decode('utf-8', errors='replace')
+        except:
+            body = str(msg.get_payload())
     
     return subject, body
 
 # Connect to email and scan for spam
-def scan_emails_for_spam(email_provider, email_address, password, config, classify_email_func):
+def scan_emails_for_spam(email_provider, email_address, password, config):
     default_servers = {
         "gmail": "imap.gmail.com",
         "outlook": "outlook.office365.com",
@@ -299,11 +349,11 @@ def scan_emails_for_spam(email_provider, email_address, password, config, classi
         print(f"Login failed: {str(e)}")
         print("Please check your credentials and try again.")
         print("If using Gmail with 2FA, make sure to use an App Password.")
-        return
+        return None
     except Exception as e:
         print(f"Connection error: {str(e)}")
         print(f"Could not connect to {imap_server}. Please check your internet connection.")
-        return
+        return None
     
     results = []
     
@@ -330,34 +380,37 @@ def scan_emails_for_spam(email_provider, email_address, password, config, classi
             print(f"\nScanning {len(email_ids)} emails in {folder}...")
             
             for i, email_id in enumerate(email_ids):
-                status, data = mail.fetch(email_id, '(RFC822)')
-                
-                if status != "OK":
-                    continue
+                try:
+                    status, data = mail.fetch(email_id, '(RFC822)')
                     
-                raw_email = data[0][1]
-                msg = email.message_from_bytes(raw_email)
-                
-                subject, body = extract_email_content(msg)
-                
-                # Combine subject and part of body for classification
-                classification_text = f"{subject} {body[:500]}"
-                
-                # Classify the email
-                prediction = classify_email_func(classification_text)
-                
-                # Store results
-                from_header = email.header.make_header(email.header.decode_header(msg.get('From', '')))
-                date_header = email.header.make_header(email.header.decode_header(msg.get('Date', '')))
-                
-                result = {
-                    "subject": subject,
-                    "from": str(from_header),
-                    "date": str(date_header),
-                    "classification": prediction
-                }
-                
-                results.append(result)
+                    if status != "OK":
+                        continue
+                        
+                    raw_email = data[0][1]
+                    msg = email.message_from_bytes(raw_email)
+                    
+                    subject, body = extract_email_content(msg)
+                    
+                    # Combine subject and part of body for classification
+                    classification_text = f"{subject} {body[:500]}"
+                    
+                    # Classify the email
+                    prediction = classify_email(classification_text)
+                    
+                    # Store results
+                    from_header = email.header.make_header(email.header.decode_header(msg.get('From', '')))
+                    date_header = email.header.make_header(email.header.decode_header(msg.get('Date', '')))
+                    
+                    result = {
+                        "subject": subject,
+                        "from": str(from_header),
+                        "date": str(date_header),
+                        "classification": prediction
+                    }
+                    
+                    results.append(result)
+                except Exception as e:
+                    print(f"\nError processing email: {str(e)}")
                 
                 # Display progress
                 sys.stdout.write(f"\rProcessed {i+1}/{len(email_ids)} emails")
@@ -369,7 +422,10 @@ def scan_emails_for_spam(email_provider, email_address, password, config, classi
             print(f"Error processing folder {folder}: {str(e)}")
     
     # Close connection
-    mail.logout()
+    try:
+        mail.logout()
+    except:
+        pass
     
     return results
 
@@ -414,11 +470,34 @@ def display_results(results):
                 print(f"   Date: {r['date']}")
                 print("-" * 50)
 
+# Test the classifier on sample emails
+def test_classifier():
+    test_emails = [
+        "Urgent! Your account has been compromised. Verify your identity immediately",
+        "Meeting scheduled for tomorrow at 2pm in conference room B",
+        "CONGRATULATIONS! You've WON $5,000,000.00 in our lottery! Claim NOW!!!"
+    ]
+
+    print("\nTesting classifier on sample emails:")
+    for i, email in enumerate(test_emails, 1):
+        prediction = classify_email(email)
+        print(f"Email {i}: {email[:50]}..." if len(email) > 50 else f"Email {i}: {email}")
+        print(f"Prediction: {prediction}")
+        print("-" * 50)
+
 # Main function
 def main():
     print("=" * 60)
     print("Email Spam Scanner")
     print("=" * 60)
+    
+    # Train the model at startup
+    global _model, _vectorizer
+    _model, _vectorizer = train_spam_classifier()
+    
+    # Test the classifier
+    test_classifier()
+    
     print("\nThis program scans your email account for potential spam messages.")
     print("IMPORTANT: This tool only accesses your emails with your explicit permission.")
     print("Your login credentials are used only for the current session and are not stored.")
@@ -436,7 +515,7 @@ def main():
     email_provider, email_address, password = get_credentials()
     
     # Scan emails
-    results = scan_emails_for_spam(email_provider, email_address, password, config, classify_email)
+    results = scan_emails_for_spam(email_provider, email_address, password, config)
     
     # Display and save results
     if results:
